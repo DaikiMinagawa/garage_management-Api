@@ -70,6 +70,10 @@
                     // BookingGarage・社有車予約情報入手
                     // </summery>
                     case 'GetGarageReserveInfo':
+
+                        // 日付情報の取り出し
+                        $SelectDay = $array_data -> SelectDay;
+
                         try
                         {
                             
@@ -82,30 +86,39 @@
                                 a.etc,
                                 a.seat_of_number,
 
-                                b.reserve_id,
-                                b.car_id,
-                                b.use_start_day,
-                                b.start_time,
-                                b.use_end_day,
-                                b.end_time,
-                                b.driver,
-                                b.place,
-                                b.number_of_people,
-                                b.luggage,
-                                b.memo,
-                                b.etc as reserve_etc
+                                COALESCE(b.reserve_id, 0) as reserve_id,
+                                COALESCE(b.car_id, 0) as car_id,
+                                COALESCE(b.use_start_day, \'\') as use_start_day,
+                                COALESCE(b.start_time, \'\') as start_time,
+                                COALESCE(b.use_end_day, \'\') as use_end_day,
+                                COALESCE(b.end_time, \'\') as end_time,
+                                COALESCE(b.driver, \'\') as driver,
+                                COALESCE(b.place, \'\') as place,
+                                COALESCE(b.number_of_people, \'\') as number_of_people,
+                                COALESCE(b.luggage, \'\') as luggage,
+                                COALESCE(b.memo, \'\') as memo,
+                                COALESCE(b.etc, \'\') as reserve_etc
 
                                 FROM cars a
 
                                 LEFT JOIN reserve b
                                 ON a.car_id = b.car_id
                                 AND b.cancel_day IS NULL
-                                OR a.use_display = true
+                                AND b.use_start_day = $1
+
+                                WHERE a.use_display = true AND a.un_useble_day IS NULL
+                                
+
                                 ORDER BY display_car_id ASC, b.start_time ASC;
                             ';
 
+                            // $1 = $SelectDay  
+                            $params = [$SelectDay];
+
                             // 実行
-                            $result1 = pg_query($sql_1);
+                            $result1 = pg_query_params($pg_conn, $sql_1, $params);
+                            //$result1 = pg_query($sql_1);
+
                             $ReserveBookingData = pg_fetch_all($result1);
 
                             //オブジェクト配列
@@ -116,7 +129,7 @@
                             pg_query($pg_conn,"COMMIT");
     
                         } 
-                        catch (Exception $e) {
+                        catch (Exception $ex) {
     
                             var_dump($ex);
     
@@ -130,7 +143,7 @@
                     break;
 
                     /// <summery>
-                    /// 予約情報が重複して無いか確認
+                    /// 予約情報が重複して無いか確認(新規登録時)
                     /// </summery>
                     case 'CheckDoubleData':
 
@@ -204,8 +217,87 @@
                                 pg_query($pg_conn,"ROLLBACK");
                                 pg_close($pg_conn);
                             }
-                     break;   
+                     break;
+                     
+                    /// <summery>
+                    /// 予約情報が重複して無いか確認(予約変更時)
+                    /// </summery>
+                    case 'CheckDoubleData_Edit':
 
+                        // 保存させたいデータ (配列)
+                        $SaveCheckDataArray = $array_data->SaveData;
+
+                        try
+                        {
+
+                            // ✅ すべての重複データをまとめて格納する配列
+                            $allDoubleData = [];
+
+                            // ループ処理で複数レコードを保存
+                            foreach ($SaveCheckDataArray as $SaveData) {
+
+                                $CarId = $SaveData->CarId;
+                                $UseStartDay = $SaveData->StartDate;
+                                $StartTime = $SaveData->StartTime;
+                                $UseEndDay = $SaveData->EndDate;
+                                $UseEndTime = $SaveData->EndTime;
+
+                                var_dump($CarId, "$UseEndDay $UseEndTime", "$UseStartDay $StartTime");
+
+
+                                // マスター情報取得クエリ
+                                $sql_1 = "
+                                SELECT
+                                    use_start_day,
+                                    start_time,
+                                    end_time,
+                                    driver
+                                FROM reserve
+                                WHERE
+                                car_id = $1
+                                AND cancel_day IS NULL
+                                AND (
+                                    (use_start_day || ' ' || start_time) <= $2
+                                    AND
+                                    (use_end_day || ' ' || end_time) >= $3
+                                )
+                                ORDER BY car_id ASC;";
+
+                                // $1 = $CarId $2 = "$UseEndDay $UseEndTime" $3 = "$UseStartDay $StartTime"
+                                $params = [
+                                    $CarId,
+                                    "$UseEndDay $UseEndTime",
+                                    "$UseStartDay $StartTime"
+                                ];
+
+                                // 実行
+                                $result1 = pg_query_params($pg_conn, $sql_1, $params);
+
+                                $rows = pg_fetch_all($result1);
+
+                                // ✅ 結果が false（0件）なら空配列としてスキップ、それ以外はマージ
+                                if ($rows !== false) {
+                                    $allDoubleData = array_merge($allDoubleData, $rows);
+                                }
+                            }
+        
+                                //オブジェクト配列
+                                $all_data = ['data' => ['CheckData' => $allDoubleData] ]; 
+        
+            
+                                //クエリのコミット
+                                pg_query($pg_conn,"COMMIT");
+                            } 
+                            catch (Exception $ex) {
+        
+                                var_dump($ex->getMessage());
+        
+                                // クエリのロールバック
+                                pg_query($pg_conn,"ROLLBACK");
+                                pg_close($pg_conn);
+                            }
+                     break;
+                     
                     
                     // <summery>
                     // BookingGarage・マスター社有車情報入手
@@ -216,7 +308,7 @@
                         {
                             // マスター情報取得クエリ
                             $sql_1 = 'SELECT
-                                car_id,car_name,car_no,garages,etc,creat_day,create_user_id
+                                car_id,car_name,car_no,garages,etc,creat_day,create_user_id,seat_of_number
                                 FROM cars
                                 WHERE un_useble_day IS NULL 
                                 ORDER BY car_id ASC;
@@ -255,7 +347,7 @@
                         {
                             // マスター情報取得クエリ
                             $sql_1 = 'SELECT
-                                car_id,car_name,car_no,garages,etc,un_useble_day,un_useble_user_id
+                                car_id,car_name,car_no,garages,etc,un_useble_day,un_useble_user_id,seat_of_number
                                 FROM cars
                                 WHERE un_useble_day IS NOT NULL 
                                 ORDER BY car_id ASC;
