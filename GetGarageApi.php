@@ -178,11 +178,11 @@
                                 car_id = $1
                                 AND cancel_day IS NULL
                                 AND (
-                                    (use_start_day || ' ' || start_time) <= $2
+                                    (use_start_day || ' ' || start_time) < $2
                                     AND
-                                    (use_end_day || ' ' || end_time) >= $3
+                                    (use_end_day || ' ' || end_time) > $3
                                 )
-                                ORDER BY car_id ASC;";
+                                ORDER BY use_start_day ASC, start_time ASC;";
 
                                 // $1 = $CarId $2 = "$UseEndDay $UseEndTime" $3 = "$UseStartDay $StartTime"
                                 $params = [
@@ -217,12 +217,13 @@
                                 pg_query($pg_conn,"ROLLBACK");
                                 pg_close($pg_conn);
                             }
-                     break;
+                    break;
+
                      
                     /// <summery>
                     /// 予約情報が重複して無いか確認(予約変更時)
                     /// </summery>
-                    case 'CheckDoubleData_Edit':
+                    case 'CheckDoubleDataEdit':
 
                         // 保存させたいデータ (配列)
                         $SaveCheckDataArray = $array_data->SaveData;
@@ -233,16 +234,12 @@
                             // ✅ すべての重複データをまとめて格納する配列
                             $allDoubleData = [];
 
-                            // ループ処理で複数レコードを保存
-                            foreach ($SaveCheckDataArray as $SaveData) {
-
-                                $CarId = $SaveData->CarId;
-                                $UseStartDay = $SaveData->StartDate;
-                                $StartTime = $SaveData->StartTime;
-                                $UseEndDay = $SaveData->EndDate;
-                                $UseEndTime = $SaveData->EndTime;
-
-                                var_dump($CarId, "$UseEndDay $UseEndTime", "$UseStartDay $StartTime");
+                                $CarId = $SaveCheckDataArray->CarId;
+                                $ReserveId = $SaveCheckDataArray->ReserveId;
+                                $UseStartDay = $SaveCheckDataArray->StartDate;
+                                $StartTime = $SaveCheckDataArray->StartTime;
+                                $UseEndDay = $SaveCheckDataArray->EndDate;
+                                $UseEndTime = $SaveCheckDataArray->EndTime;
 
 
                                 // マスター情報取得クエリ
@@ -255,19 +252,21 @@
                                 FROM reserve
                                 WHERE
                                 car_id = $1
+                                AND reserve_id != $4
                                 AND cancel_day IS NULL
                                 AND (
-                                    (use_start_day || ' ' || start_time) <= $2
+                                    (use_start_day || ' ' || start_time) < $2
                                     AND
-                                    (use_end_day || ' ' || end_time) >= $3
+                                    (use_end_day || ' ' || end_time) > $3
                                 )
-                                ORDER BY car_id ASC;";
+                                ORDER BY use_start_day ASC, start_time ASC;";
 
                                 // $1 = $CarId $2 = "$UseEndDay $UseEndTime" $3 = "$UseStartDay $StartTime"
                                 $params = [
-                                    $CarId,
+                                    (int)$CarId,
                                     "$UseEndDay $UseEndTime",
-                                    "$UseStartDay $StartTime"
+                                    "$UseStartDay $StartTime",
+                                    (int)$ReserveId
                                 ];
 
                                 // 実行
@@ -279,7 +278,7 @@
                                 if ($rows !== false) {
                                     $allDoubleData = array_merge($allDoubleData, $rows);
                                 }
-                            }
+                            
         
                                 //オブジェクト配列
                                 $all_data = ['data' => ['CheckData' => $allDoubleData] ]; 
@@ -297,6 +296,8 @@
                                 pg_close($pg_conn);
                             }
                      break;
+                    
+
                      
                     
                     // <summery>

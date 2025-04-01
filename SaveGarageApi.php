@@ -178,7 +178,7 @@
                         try
                         {
 
-                            $ReserveId = $SaveData->Reserve_Id;
+                            $ReserveId = $SaveData->ReserveId;
                             $UseStartDay = $SaveData->StartDate;
                             $StartTime = $SaveData->StartTime;
                             $UseEndDay = $SaveData->EndDate;
