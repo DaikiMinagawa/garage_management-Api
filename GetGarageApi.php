@@ -39,6 +39,17 @@
         // 認証に成功したら
         if($checkedData["data"]){
 
+            /////////////////////////////////////////////////////////////
+            // ユーザー情報取得のために必要な設定 //////////////////////////
+                // user_management用
+                $getExternalHeaders = array(
+                    "Authorization: Bearer ".SecretData::EXTERNAL_DB_KEY,
+                    "Content-type: application/json"
+                );
+            /////////////////////////////////////////////////////////////
+            /////////////////////////////////////////////////////////////
+
+
             // メンテナンス状況のチェック ///////////////////////////////////////
 
             $loginUserAuthority = $array_data->loginUserAuthority;
@@ -85,7 +96,11 @@
                                 a.garages,
                                 a.etc,
                                 a.seat_of_number,
+                                a.unlimited_day,
+                                a.limited_day,
+                                
 
+                                -- Nullだったら、空白を入れる
                                 COALESCE(b.reserve_id, 0) as reserve_id,
                                 COALESCE(b.car_id, 0) as car_id,
                                 COALESCE(b.use_start_day, \'\') as use_start_day,
@@ -106,10 +121,15 @@
                                 AND b.cancel_day IS NULL
                                 AND b.use_start_day = $1
 
-                                WHERE a.use_display = true AND a.un_useble_day IS NULL
-                                
+                                WHERE
+                                 (a.use_display = true AND a.un_useble_day IS NULL) 
+                                     AND a.unlimited_day <= $1::timestamp
+                                     AND (
+                                            -- limited_day が NULL の場合は条件をスキップ、それ以外は比較
+                                            a.limited_day IS NULL OR a.limited_day >= $1::timestamp
+                                        )
 
-                                ORDER BY display_car_id ASC, b.start_time ASC;
+                                ORDER BY display_no ASC, display_car_id ASC, b.start_time ASC;
                             ';
 
                             // $1 = $SelectDay  
@@ -295,49 +315,106 @@
                                 pg_query($pg_conn,"ROLLBACK");
                                 pg_close($pg_conn);
                             }
-                     break;
+                    break;
                     
-
-                     
                     
                     // <summery>
                     // BookingGarage・マスター社有車情報入手
                     // </summery>
                     case 'GetMasterInfo':
-
+ 
                         try
                         {
+                            ////////////////////////////////////////////////////////////////////
+                            // ユーザー情報の取得と、一時的テーブルの作成 //////////////////////////
+                            // curlのセッションを初期化する
+                            $ch = curl_init();
+                            // curlのオプションを設定する
+                            $options = array(
+                            CURLOPT_URL => 'https://system.syowa.com/user-management/api/'.ConstData::API_VER.'/user',
+                            CURLOPT_RETURNTRANSFER => true,
+                            CURLOPT_HTTPHEADER => $getExternalHeaders,
+                            );
+                            curl_setopt_array($ch, $options);
+                            // curlを実行し、レスポンスデータを保存する
+                            $response  = curl_exec($ch);
+                            $user_arr = json_decode($response,true);
+                            // curlセッションを終了する
+                            curl_close($ch);
+ 
+                            //一時的なテーブルの作成
+                            pg_query("
+                            CREATE TEMP TABLE temp_user_table(
+                                user_id INTEGER,
+                                user_name TEXT
+                                )
+                            ");
+ 
+                            // 一時的なテーブルにユーザー情報を挿入
+                            foreach ($user_arr["data"] as $userData) {
+                                //var_dump($orderData);
+                                pg_query("
+                                    INSERT INTO temp_user_table(
+                                        user_id,
+                                        user_name
+                                    )
+                                    VALUES (
+                                        '{$userData["userId"]}',
+                                        '{$userData["familyName"]} {$userData["givenName"]}'
+                                    )
+                                ");
+                                }
+ 
+                            ////////////////////////////////////////////////////////////////////
+                            ////////////////////////////////////////////////////////////////////
+ 
+ 
                             // マスター情報取得クエリ
                             $sql_1 = 'SELECT
-                                car_id,car_name,car_no,garages,etc,creat_day,create_user_id,seat_of_number
-                                FROM cars
-                                WHERE un_useble_day IS NULL 
-                                ORDER BY car_id ASC;
+                                a.car_id,
+                                a.car_name,
+                                a.car_no,
+                                a.garages,
+                                a.etc,
+                                a.creat_day,
+                                a.create_user_id,
+                                a.seat_of_number,
+                                a.use_display,
+                                a.is_rental,
+                                a.unlimited_day,
+                                a.limited_day,
+                                a.new_mileage,
+                                b.user_name
+                                FROM cars a
+                                LEFT JOIN temp_user_table b ON a.create_user_id = b.user_id --一時的なユーザーテーブルと結合する
+                                WHERE a.un_useble_day IS NULL
+                                ORDER BY a.display_no ASC, a.car_id ASC;
                             ';
-
+ 
                             // 実行
                             $result1 = pg_query($sql_1);
                             $MasterBookingData = pg_fetch_all($result1);
-
+ 
                             //オブジェクト配列
-                            $all_data = ['data' => ['MasterGarage' => $MasterBookingData] ]; 
-
-        
+                            $all_data = ['data' => ['MasterGarage' => $MasterBookingData] ];
+ 
+       
                             //クエリのコミット
                             pg_query($pg_conn,"COMMIT");
-    
-                        } 
+   
+                        }
                         catch (Exception $e) {
-    
+   
                             var_dump($ex);
-    
+   
                             // クエリのロールバック
                             pg_query($pg_conn,"ROLLBACK");
                             pg_close($pg_conn);
-    
+   
                         }
+ 
+                    break;
 
-                    break;    
 
                     // <summery>
                     // BookingGarage・マスター社有車情報入手
@@ -346,12 +423,67 @@
 
                         try
                         {
+                            ////////////////////////////////////////////////////////////////////
+                            // ユーザー情報の取得と、一時的テーブルの作成 //////////////////////////
+                            // curlのセッションを初期化する
+                            $ch = curl_init();
+                            // curlのオプションを設定する
+                            $options = array(
+                            CURLOPT_URL => 'https://system.syowa.com/user-management/api/'.ConstData::API_VER.'/user',
+                            CURLOPT_RETURNTRANSFER => true,
+                            CURLOPT_HTTPHEADER => $getExternalHeaders,
+                            );
+                            curl_setopt_array($ch, $options);
+                            // curlを実行し、レスポンスデータを保存する
+                            $response  = curl_exec($ch);
+                            $user_arr = json_decode($response,true);
+                            // curlセッションを終了する
+                            curl_close($ch);
+ 
+                            //一時的なテーブルの作成
+                            pg_query("
+                            CREATE TEMP TABLE temp_user_table(
+                                user_id INTEGER,
+                                user_name TEXT
+                                )
+                            ");
+ 
+                            // 一時的なテーブルにユーザー情報を挿入
+                            foreach ($user_arr["data"] as $userData) {
+                                //var_dump($orderData);
+                                pg_query("
+                                    INSERT INTO temp_user_table(
+                                        user_id,
+                                        user_name
+                                    )
+                                    VALUES (
+                                        '{$userData["userId"]}',
+                                        '{$userData["familyName"]} {$userData["givenName"]}'
+                                    )
+                                ");
+                                }
+ 
+                            ////////////////////////////////////////////////////////////////////
+                            ////////////////////////////////////////////////////////////////////
+
+
+
                             // マスター情報取得クエリ
                             $sql_1 = 'SELECT
-                                car_id,car_name,car_no,garages,etc,un_useble_day,un_useble_user_id,seat_of_number
-                                FROM cars
-                                WHERE un_useble_day IS NOT NULL 
-                                ORDER BY car_id ASC;
+                                a.car_id,
+                                a.car_name,
+                                a.car_no,
+                                a.garages,
+                                a.etc,
+                                a.creat_day,
+                                a.create_user_id,
+                                a.seat_of_number,
+                                a.use_display,
+                                b.user_name
+                                FROM cars a
+                                LEFT JOIN temp_user_table b ON a.create_user_id = b.user_id --一時的なユーザーテーブルと結合する
+                                WHERE a.un_useble_day IS NOT NULL
+                                ORDER BY a.display_no ASC;
                             ';
 
                             // 実行
@@ -449,6 +581,592 @@
                         }
 
                     break;
+
+                    // <summery>
+                    // マスター車情報入手(HistroySearch画面)
+                    // </summery>
+                    case 'GetMasterCarCategory':
+
+                        try
+                        {
+                            
+                            // マスター情報取得クエリ
+                            $sql_1 = 'SELECT
+                                car_id,
+                                car_name,
+                                car_no
+
+                                FROM cars 
+
+                                WHERE un_useble_day IS NULL
+                                ORDER BY car_id ASC
+                            ';
+             
+
+                            // 実行
+                            $result1 = pg_query($sql_1);
+                            $MasterData = pg_fetch_all($result1);
+
+                            $sql_2 = 'SELECT
+                            car_id,
+                            car_name,
+                            car_no
+
+                            FROM cars 
+
+                            WHERE un_useble_day IS NOT NULL
+                            ORDER BY car_id ASC
+                        ';
+
+                            // 実行
+                            $result2 = pg_query($sql_2);
+                            $DELETEMasterData = pg_fetch_all($result2);
+
+                            //オブジェクト配列
+                            $all_data = ['data' => ['MasterGarage' => $MasterData, 'DELETEMasterGarage' => $DELETEMasterData] ]; 
+
+        
+                            //クエリのコミット
+                            pg_query($pg_conn,"COMMIT");
+    
+                        } 
+                        catch (Exception $ex) {
+    
+                            var_dump($ex);
+    
+                            // クエリのロールバック
+                            pg_query($pg_conn,"ROLLBACK");
+                            pg_close($pg_conn);
+    
+                        }
+
+                    break;
+
+                    // <summery>
+                    // 過去の予約履歴確認(BookingHistroySearch画面)
+                    // </summery>
+                    case 'GetHistoryReserveInfo':
+
+                        $SelectCheckDataArray = $array_data->SerchHistory;
+
+                        try
+                        {
+                            ////////////////////////////////////////////////////////////////////
+                            // ユーザー情報の取得と、一時的テーブルの作成 //////////////////////////
+                            // curlのセッションを初期化する
+                            $ch = curl_init();
+                            // curlのオプションを設定する
+                            $options = array(
+                            CURLOPT_URL => 'https://system.syowa.com/user-management/api/'.ConstData::API_VER.'/user',
+                            CURLOPT_RETURNTRANSFER => true,
+                            CURLOPT_HTTPHEADER => $getExternalHeaders,
+                            );
+                            curl_setopt_array($ch, $options);
+                            // curlを実行し、レスポンスデータを保存する
+                            $response  = curl_exec($ch);
+                            $user_arr = json_decode($response,true);
+                            // curlセッションを終了する
+                            curl_close($ch);
+ 
+                            //一時的なテーブルの作成
+                            pg_query("
+                            CREATE TEMP TABLE temp_user_table(
+                                user_id INTEGER,
+                                user_name TEXT
+                                )
+                            ");
+ 
+                            // 一時的なテーブルにユーザー情報を挿入
+                            foreach ($user_arr["data"] as $userData) {
+                                //var_dump($orderData);
+                                pg_query("
+                                    INSERT INTO temp_user_table(
+                                        user_id,
+                                        user_name
+                                    )
+                                    VALUES (
+                                        '{$userData["userId"]}',
+                                        '{$userData["familyName"]} {$userData["givenName"]}'
+                                    )
+                                ");
+                                }
+ 
+                            ////////////////////////////////////////////////////////////////////
+                            ////////////////////////////////////////////////////////////////////
+ 
+
+
+                            $ForBellow = $SelectCheckDataArray->ForBellow;
+                            $PullCars = $SelectCheckDataArray->PullCars;
+                            $CarId = $SelectCheckDataArray->CarId;
+                            $StartDate = $SelectCheckDataArray->StartDate;
+                            $EndDate = $SelectCheckDataArray->EndDate;
+                            
+                            $conditions = ["a.cancel_day IS NULL"]; // ベース条件
+                            $params = []; // パラメータ配列
+                            $paramIndex = 1;
+                            
+                            // ForBellowがtrueなら日付フィルタを追加
+                            if ($ForBellow === false) {
+                                $conditions[] = "a.use_start_day >= $" . $paramIndex++;
+                                $params[] = $StartDate;
+                            
+                                $conditions[] = "a.use_start_day <= $" . $paramIndex++;
+                                $params[] = $EndDate;
+                            }
+                            
+                            // PullCarsが「全車種」以外なら車両フィルタを追加
+                            if ($PullCars !== "全車種") {
+                                $conditions[] = "b.car_id = $" . $paramIndex++;
+                                $params[] = $CarId;
+                            }
+                            
+                            // 条件を結合
+                            $whereClause = implode(" AND ", $conditions);
+                            
+                            // SQLを組み立て
+                            $sql_1 = "
+                            SELECT
+                                a.use_start_day,
+                                a.start_time,
+                                a.end_time,
+                                a.driver,
+                                a.place,
+                                a.number_of_people,
+                                a.luggage,
+                                a.memo,
+                                a.etc,
+                                a.created_user_id,
+                                a.created_day,
+                                b.car_name,
+                                b.car_no,
+                                b.garages,
+                                c.user_name
+                            FROM reserve a
+                            LEFT JOIN temp_user_table c ON a.created_user_id = c.user_id
+                            LEFT JOIN cars b USING(car_id)
+                            WHERE $whereClause
+                            ORDER BY display_no ASC, b.car_id ASC, a.use_start_day ASC;
+                            ";
+                            
+                            // 実行
+                            if ($PullCars == "全車種" && $ForBellow === false) {
+                                $result1 = pg_query_params($pg_conn, $sql_1, $params);
+                            }
+                            else{
+                                $result1 = pg_query_params($pg_conn, $sql_1, $params);
+                            }
+                            $ReserveBookingData = pg_fetch_all($result1);
+
+
+                            //オブジェクト配列
+                            $all_data = ['data' => ['ReserveHistoryData' => $ReserveBookingData] ]; 
+
+        
+                            //クエリのコミット
+                            pg_query($pg_conn,"COMMIT");
+    
+                        } 
+                        catch (Exception $ex) {
+    
+                            var_dump($ex);
+    
+                            // クエリのロールバック
+                            pg_query($pg_conn,"ROLLBACK");
+                            pg_close($pg_conn);
+    
+                        }
+
+
+                    break;
+
+                    // <summery>
+                    // 過去の予約履歴確認(BookingHistroySearch画面)
+                    // </summery>
+                    case 'GetMileageHistoryAllInfo':
+
+                        $SelectCheckDataArray = $array_data->SerchHistory;
+
+                        try
+                        {
+                            ////////////////////////////////////////////////////////////////////
+                            // ユーザー情報の取得と、一時的テーブルの作成 //////////////////////////
+                            // curlのセッションを初期化する
+                            $ch = curl_init();
+                            // curlのオプションを設定する
+                            $options = array(
+                            CURLOPT_URL => 'https://system.syowa.com/user-management/api/'.ConstData::API_VER.'/user',
+                            CURLOPT_RETURNTRANSFER => true,
+                            CURLOPT_HTTPHEADER => $getExternalHeaders,
+                            );
+                            curl_setopt_array($ch, $options);
+                            // curlを実行し、レスポンスデータを保存する
+                            $response  = curl_exec($ch);
+                            $user_arr = json_decode($response,true);
+                            // curlセッションを終了する
+                            curl_close($ch);
+ 
+                            //一時的なテーブルの作成
+                            pg_query("
+                            CREATE TEMP TABLE temp_user_table(
+                                user_id INTEGER,
+                                user_name TEXT
+                                )
+                            ");
+ 
+                            // 一時的なテーブルにユーザー情報を挿入
+                            foreach ($user_arr["data"] as $userData) {
+                                //var_dump($orderData);
+                                pg_query("
+                                    INSERT INTO temp_user_table(
+                                        user_id,
+                                        user_name
+                                    )
+                                    VALUES (
+                                        '{$userData["userId"]}',
+                                        '{$userData["familyName"]} {$userData["givenName"]}'
+                                    )
+                                ");
+                                }
+ 
+                            ////////////////////////////////////////////////////////////////////
+                            ////////////////////////////////////////////////////////////////////
+ 
+
+
+                            $ForBellow = $SelectCheckDataArray->ForBellow;
+                            $PullCars = $SelectCheckDataArray->PullCars;
+                            $CarId = $SelectCheckDataArray->CarId;
+                            $StartDate = $SelectCheckDataArray->StartDate;
+                            $EndDate = $SelectCheckDataArray->EndDate;
+                            
+                            $conditions = ["a.car_id IS NOT NULL"]; // ベース条件(この条件はSQLの為適当医に入れる)
+                            $params = []; // パラメータ配列
+                            $paramIndex = 1;
+                            
+                            // ForBellowがtrueなら日付フィルタを追加
+                            if ($ForBellow === false) {
+                                $conditions[] = "a.add_day >= $" . $paramIndex++;
+                                $params[] = $StartDate;
+                            
+                                $conditions[] = "a.add_day <= $" . $paramIndex++;
+                                $params[] = $EndDate;
+                            }
+                            
+                            // PullCarsが「全車種」以外なら車両フィルタを追加
+                            if ($PullCars !== "全車種") {
+                                $conditions[] = "b.car_id = $" . $paramIndex++;
+                                $params[] = $CarId;
+                            }
+                            
+                            // 条件を結合
+                            $whereClause = implode(" AND ", $conditions);
+                            
+                            // SQLを組み立て
+                            $sql_1 = "
+                            SELECT
+                                a.mileage,
+                                a.difference_mileage,
+                                a.add_day,
+                                b.car_name,
+                                b.car_no,
+                                b.garages,
+                                c.user_name
+
+                            FROM cars_mileage_history a
+                            LEFT JOIN cars b USING(car_id)
+                            LEFT JOIN temp_user_table c ON a.add_user_id = c.user_id
+                            WHERE $whereClause
+                            ORDER BY display_no ASC, b.car_id ASC;
+                            ";
+                            
+                            // 実行
+                            if ($PullCars == "全車種" && $ForBellow === false) {
+                                $result1 = pg_query_params($pg_conn, $sql_1, $params);
+                            }
+                            else{
+                                $result1 = pg_query_params($pg_conn, $sql_1, $params);
+                            }
+                            $HistoryMileageData = pg_fetch_all($result1);
+
+
+                            //オブジェクト配列
+                            $all_data = ['data' => ['HistoryMilageData' => $HistoryMileageData] ]; 
+
+        
+                            //クエリのコミット
+                            pg_query($pg_conn,"COMMIT");
+    
+                        } 
+                        catch (Exception $ex) {
+    
+                            var_dump($ex);
+    
+                            // クエリのロールバック
+                            pg_query($pg_conn,"ROLLBACK");
+                            pg_close($pg_conn);
+    
+                        }
+
+
+                    break;
+
+                    /// <summary>
+                    /// 走行距離を取得する
+                    /// </summary>
+                    case 'GetMileageNewInfo':
+
+                        try
+                        {
+
+                            // マスター情報取得クエリ
+                            $sql_1 = 'SELECT
+                                car_id,
+                                car_name,
+                                car_no,
+                                garages,
+                                new_mileage,
+                                is_rental
+
+                                FROM cars
+                                WHERE un_useble_day IS NULL
+                            ';
+ 
+                            // 実行
+                            $result1 = pg_query($sql_1);
+                            $MasterBookingData = pg_fetch_all($result1);
+ 
+                            //オブジェクト配列
+                            $all_data = ['data' => ['MasterGarage' => $MasterBookingData] ];
+ 
+       
+                            //クエリのコミット
+                            pg_query($pg_conn,"COMMIT");
+   
+    
+                        } 
+                        catch (Exception $ex) {
+    
+                            var_dump($ex);
+    
+                            // クエリのロールバック
+                            pg_query($pg_conn,"ROLLBACK");
+                            pg_close($pg_conn);
+    
+                        }
+
+
+                    break;
+
+                    /// <summary>
+                    /// 現在のタイヤ情報を取得する
+                    /// </summary>
+                    case 'GetTiresInfo':
+
+                        try
+                        {
+
+                            // マスター情報取得クエリ
+                            $sql_1 = 'SELECT
+                                a.car_id,
+                                a.car_name,
+                                a.car_no,
+                                a.garages,
+                                a.use_season_summer_tires,
+                                a.is_rental,
+                                b.tire_id,
+                                b.tire_storage,
+                                b.tire_size,
+                                b.purchase_day,
+                                b.use_season_summer
+
+
+                                FROM cars a
+                                LEFT JOIN cars_tires b ON a.car_id = b.car_id
+                                WHERE un_useble_day IS NULL AND b.useble_change_day IS NULL
+                            ';
+ 
+                            // 実行
+                            $result1 = pg_query($sql_1);
+                            $MasterBookingData = pg_fetch_all($result1);
+ 
+                            //オブジェクト配列
+                            $all_data = ['data' => ['MasterGarage' => $MasterBookingData] ];
+ 
+       
+                            //クエリのコミット
+                            pg_query($pg_conn,"COMMIT");
+   
+    
+                        } 
+                        catch (Exception $ex) {
+    
+                            var_dump($ex);
+    
+                            // クエリのロールバック
+                            pg_query($pg_conn,"ROLLBACK");
+                            pg_close($pg_conn);
+    
+                        }
+
+
+                    break;
+
+                    /// <sumeery>
+                    /// タイヤ情報とマスター情報を取得する
+                    /// </summary>
+                    case 'GetTiresEditData':
+
+                        try
+                        {
+                            
+                            // マスター情報取得クエリ
+                            $sql_1 = 'SELECT
+                                car_id,
+                                car_name,
+                                car_no
+
+                                FROM cars 
+
+                                WHERE un_useble_day IS NULL
+                                ORDER BY car_id ASC
+                            ';
+             
+
+                            // 実行
+                            $result1 = pg_query($sql_1);
+                            $MasterData = pg_fetch_all($result1);
+
+                            $sql_2 = 'SELECT
+                            car_id,
+                            tire_id,
+                            use_season_summer,
+                            tire_size,
+                            tire_storage,
+                            purchase_day,
+                            memo
+
+
+                            FROM cars_tires 
+
+                            WHERE useble_change_day IS NULL
+                            ORDER BY car_id ASC
+                        ';
+
+                            // 実行
+                            $result2 = pg_query($sql_2);
+                            $TireEditData = pg_fetch_all($result2);
+
+                            //オブジェクト配列
+                            $all_data = ['data' => ['MasterGarage' => $MasterData, 'TireData' => $TireEditData] ]; 
+
+        
+                            //クエリのコミット
+                            pg_query($pg_conn,"COMMIT");
+    
+                        } 
+                        catch (Exception $ex) {
+    
+                            var_dump($ex);
+    
+                            // クエリのロールバック
+                            pg_query($pg_conn,"ROLLBACK");
+                            pg_close($pg_conn);
+    
+                        }
+
+                    break;
+
+                    // <summery>
+                    // スケジュール
+                    // 予定取得
+                    // </summery>
+                    case 'GetSchedule':
+                       
+                        // 取得したい年度
+                        $fiscal_year = $array_data->fiscal_year;
+
+                        try
+                        {
+                           
+                            //スケジュール取得クエリ
+                            $sql = 'SELECT
+                            schedule_id,
+                            title_id,
+                            date,
+                            car_id,
+                            fiscal_year,
+                            memo
+                            FROM schedule
+                            WHERE fiscal_year = $1 AND delete_day IS NULL
+                            ORDER BY car_id ASC';
+ 
+                            // 実行（プレースホルダを使って安全に）
+                            $result1 = pg_query_params($pg_conn, $sql, [$fiscal_year]);
+ 
+                            $scheduleData = pg_fetch_all($result1);
+ 
+                            //オブジェクト配列
+                            $all_data = ['data' =>  $scheduleData];
+ 
+       
+                            //クエリのコミット
+                            pg_query($pg_conn,"COMMIT");
+                        }
+                        catch (Exception $ex) {
+   
+                            var_dump($ex);
+   
+                            // クエリのロールバック
+                            pg_query($pg_conn,"ROLLBACK");
+                            pg_close($pg_conn);
+   
+                        }
+ 
+                    break;
+
+                    // <summery>
+                    // スケジュール
+                    // 予定タイトル取得
+                    // </summery>
+                    case 'GetScheduleTitle':
+                        try
+                        {
+                           
+                            //スケジュール取得クエリ
+                            $sql = 'SELECT
+                            title_id,
+                            title_name,
+                            title_color,
+                            delete_day
+                            FROM schedule_title
+                            --WHERE delete_day IS NULL
+                            ORDER BY title_id ASC';
+ 
+                            // 実行（プレースホルダを使って安全に）
+                            $result1 = pg_query($pg_conn, $sql);
+ 
+                            $scheduleData = pg_fetch_all($result1);
+ 
+                            //オブジェクト配列
+                            $all_data = ['data' =>  $scheduleData];
+ 
+       
+                            //クエリのコミット
+                            pg_query($pg_conn,"COMMIT");
+                        }
+                        catch (Exception $ex) {
+   
+                            var_dump($ex);
+   
+                            // クエリのロールバック
+                            pg_query($pg_conn,"ROLLBACK");
+                            pg_close($pg_conn);
+   
+                        }
+ 
+                    break;
+                    
                 }                     
             }
         }
